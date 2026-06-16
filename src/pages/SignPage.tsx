@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import SignaturePad from '../components/SignaturePad'
 
 type Agreement = Record<string, unknown>
 type Signature = Record<string, unknown>
@@ -15,6 +16,7 @@ export default function SignPage() {
   const [signature, setSignature] = useState<Signature | null>(null)
   const [fullName, setFullName] = useState('')
   const [mykad, setMykad] = useState('')
+  const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null)
   const [signed, setSigned] = useState(false)
   const [sigId, setSigId] = useState<string | null>(null)
 
@@ -52,6 +54,7 @@ export default function SignPage() {
       setSigId(sig.id as string)
       if (sig.full_name) setFullName(sig.full_name as string)
       if (sig.mykad) setMykad(sig.mykad as string)
+      if (sig.signature_data_url) setSignatureDataUrl(sig.signature_data_url as string)
       if (sig.signed_at) setSigned(true)
 
       setLoading(false)
@@ -63,6 +66,11 @@ export default function SignPage() {
   async function handleSign() {
     if (!fullName.trim() || !mykad.trim()) {
       setError('Please fill in your full name and MyKad/IC number.')
+      return
+    }
+
+    if (!signatureDataUrl) {
+      setError('Please draw your signature in the pad above.')
       return
     }
 
@@ -90,6 +98,7 @@ export default function SignPage() {
           p_sig_id: sigId,
           p_full_name: fullName.trim(),
           p_mykad: mykadClean,
+          p_signature_data_url: signatureDataUrl,
           p_ip_address: ipAddress,
         })
 
@@ -205,6 +214,13 @@ export default function SignPage() {
 
           {signed ? (
             <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
+              {signatureDataUrl && (
+                <img
+                  src={signatureDataUrl}
+                  alt="Your signature"
+                  className="max-h-20 mx-auto mb-3 border-b border-gray-200 pb-2"
+                />
+              )}
               <p className="text-green-700 font-medium text-lg">✅ You have already signed this agreement.</p>
               <p className="text-sm text-gray-500 mt-1">
                 Signed on {new Date(signature.signed_at as string).toLocaleString('en-MY', { timeZone: 'Asia/Kuala_Lumpur' })}
@@ -219,6 +235,12 @@ export default function SignPage() {
               )}
 
               <div className="space-y-4">
+                <SignaturePad
+                  value={signatureDataUrl}
+                  onChange={setSignatureDataUrl}
+                  label="Draw your signature"
+                />
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Full Name
@@ -247,7 +269,7 @@ export default function SignPage() {
                 </div>
 
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-700">
-                  By clicking "Sign Agreement", you acknowledge that this constitutes your electronic
+                  By signing below, you acknowledge that this constitutes your electronic
                   signature and confirms your agreement to be bound by the terms of this document.
                 </div>
 
