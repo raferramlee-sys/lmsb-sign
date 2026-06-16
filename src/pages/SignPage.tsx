@@ -1,27 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
-
-interface Agreement {
-  id: string
-  ref_no: string
-  sender_company_name: string
-  sender_signatory_name: string
-  recipient_name: string
-  recipient_company: string
-  document_type: string
-  document_content: Record<string, unknown>
-  status: string
-}
-
-interface Signature {
-  id: string
-  agreement_id: string
-  party_role: 'disclosing' | 'receiving'
-  full_name: string | null
-  mykad: string | null
-  signed_at: string | null
-}
+import { supabase, getAgreementForSigning, submitSignature } from '../lib/supabase'
+import type { AgreementData } from '../lib/supabase'
 
 export default function SignPage() {
   const { token } = useParams<{ token: string }>()
@@ -29,8 +9,7 @@ export default function SignPage() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [agreement, setAgreement] = useState<Agreement | null>(null)
-  const [signature, setSignature] = useState<Signature | null>(null)
+  const [agreement, setAgreement] = useState<AgreementData | null>(null)
   const [fullName, setFullName] = useState('')
   const [mykad, setMykad] = useState('')
   const [signed, setSigned] = useState(false)
@@ -43,42 +22,19 @@ export default function SignPage() {
     }
 
     async function load() {
-      // Fetch signature record by token
-      const { data: sigData, error: sigErr } = await supabase
-        .from('agreement_signatures')
-        .select('*')
-        .eq('signing_token', token)
-        .single()
+      try {
+        const data = await getAgreementForSigning(token)
+        setAgreement(data)
 
-      if (sigErr || !sigData) {
+        // Pre-fill if already signed
+        if (data.signature.full_name) setFullName(data.signature.full_name)
+        if (data.signature.mykad) setMykad(data.signature.mykad)
+        if (data.signature.signed_at) setSigned(true)
+      } catch (err) {
         setError('Signing link not found or has expired.')
+      } finally {
         setLoading(false)
-        return
       }
-
-      const sig = sigData as Signature
-      setSignature(sig)
-
-      // Pre-fill name if already signed
-      if (sig.full_name) setFullName(sig.full_name)
-      if (sig.mykad) setMykad(sig.mykad)
-      if (sig.signed_at) setSigned(true)
-
-      // Fetch agreement
-      const { data: agrData, error: agrErr } = await supabase
-        .from('agreement_registry')
-        .select('*')
-        .eq('id', sig.agreement_id)
-        .single()
-
-      if (agrErr || !agrData) {
-        setError('Agreement not found.')
-        setLoading(false)
-        return
-      }
-
-      setAgreement(agrData as Agreement)
-      setLoading(false)
     }
 
     load()
@@ -90,7 +46,6 @@ export default function SignPage() {
       return
     }
 
-    // Basic MyKad validation (12 digits with optional dash)
     const mykadClean = mykad.replace(/-/g, '')
     if (!/^\d{12}$/.test(mykadClean)) {
       setError('Please enter a valid 12-digit MyKad/IC number.')
@@ -101,7 +56,6 @@ export default function SignPage() {
     setError(null)
 
     try {
-      // Get IP from a simple service
       let ipAddress = ''
       try {
         const resp = await fetch('https://api.ipify.org?format=json')
@@ -111,20 +65,9 @@ export default function SignPage() {
         ipAddress = 'unknown'
       }
 
-      const { error: updateErr } = await supabase
-        .from('agreement_signatures')
-        .update({
-          full_name: fullName.trim(),
-          mykad: mykadClean,
-          signed_at: new Date().toISOString(),
-          ip_address: ipAddress,
-        })
-        .eq('id', signature!.id)
-
-      if (updateErr) throw updateErr
-
+      await submitSignature(agreement!.signature.id, fullName.trim(), mykadClean, ipAddress)
       setSigned(true)
-      navigate('/success')
+      navigate('/success?ref=' + encodeURIComponent(agreement!.agreement.ref_no))
     } catch (err) {
       setError('Failed to record signature. Please try again.')
       console.error(err)
@@ -135,7 +78,7 @@ export default function SignPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
           <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
           <p className="text-gray-500">Loading agreement...</p>
@@ -146,7 +89,7 @@ export default function SignPage() {
 
   if (error && !agreement) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4">
+      <div className="min-h-screen flex items-center justify-center p-4 bg-gray-50">
         <div className="bg-white rounded-xl shadow-lg p-8 max-w-md w-full text-center">
           <div className="text-4xl mb-4">⚠️</div>
           <h1 className="text-xl font-bold mb-2">Signing Link Error</h1>
@@ -157,15 +100,12 @@ export default function SignPage() {
     )
   }
 
-  if (!agreement || !signature) return null
+  if (!agreement) return null
 
-  const partyLabel = signature.party_role === 'disclosing'
-    ? agreement.sender_company_name
-    : agreement.recipient_company
-
-  const partyName = signature.party_role === 'disclosing'
-    ? agreement.sender_signatory_name
-    : agreement.recipient_name
+  const sig = agreement.signature
+  const agr = agreement.agreement
+  const partyLabel = sig.party_role === 'disclosing' ? agr.sender_company_name : agr.recipient_company
+  const partyName = sig.party_role === 'disclosing' ? agr.sender_signatory_name : agr.recipient_name
 
   return (
     <div className="min-h-screen bg-gray-50 py-6 px-4">
@@ -179,7 +119,7 @@ export default function SignPage() {
             </div>
             <div className="text-right">
               <p className="text-xs text-gray-400 uppercase tracking-wide">Reference</p>
-              <p className="font-mono text-sm font-bold">{agreement.ref_no}</p>
+              <p className="font-mono text-sm font-bold">{agr.ref_no}</p>
             </div>
           </div>
 
@@ -187,7 +127,7 @@ export default function SignPage() {
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <p className="text-gray-500">Document Type</p>
-                <p className="font-medium">{agreement.document_type}</p>
+                <p className="font-medium">{agr.document_type}</p>
               </div>
               <div>
                 <p className="text-gray-500">Status</p>
@@ -197,11 +137,11 @@ export default function SignPage() {
               </div>
               <div>
                 <p className="text-gray-500">Disclosing Party</p>
-                <p className="font-medium">{agreement.sender_company_name}</p>
+                <p className="font-medium">{agr.sender_company_name}</p>
               </div>
               <div>
                 <p className="text-gray-500">Receiving Party</p>
-                <p className="font-medium">{agreement.recipient_company}</p>
+                <p className="font-medium">{agr.recipient_company}</p>
               </div>
             </div>
           </div>
@@ -211,7 +151,7 @@ export default function SignPage() {
         <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
           <h2 className="text-lg font-bold mb-4">Agreement Preview</h2>
           <div className="prose prose-sm max-w-none text-gray-700 whitespace-pre-wrap font-mono text-xs leading-relaxed border rounded-lg p-4 bg-gray-50">
-            {String(agreement.document_content.text || '')}
+            {agr.document_content?.text || ''}
           </div>
         </div>
 
@@ -226,7 +166,7 @@ export default function SignPage() {
             <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
               <p className="text-green-700 font-medium text-lg">✅ You have already signed this agreement.</p>
               <p className="text-sm text-gray-500 mt-1">
-                Signed on {new Date(signature.signed_at!).toLocaleString('en-MY', { timeZone: 'Asia/Kuala_Lumpur' })}
+                Signed on {new Date(sig.signed_at!).toLocaleString('en-MY', { timeZone: 'Asia/Kuala_Lumpur' })}
               </p>
             </div>
           ) : (
@@ -282,7 +222,7 @@ export default function SignPage() {
         </div>
 
         <div className="text-center text-xs text-gray-400 pb-8">
-          Powered by <span className="font-bold">LMSB</span> E-Sign Portal &middot; Reference: {agreement.ref_no}
+          Powered by <span className="font-bold">LMSB</span> E-Sign Portal &middot; Reference: {agr.ref_no}
         </div>
       </div>
     </div>
